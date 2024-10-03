@@ -1,14 +1,19 @@
-import { createRoom as createTwilioRoom, listActiveRooms as listTwilioActiveRooms } from '../services/twilioService.js';
-import db from '../db/db.js';
+import {
+  createRoom as createTwilioRoom,
+  listActiveRooms as listTwilioActiveRooms,
+} from "../services/twilioService.js";
+import { getDb } from "../db/db.js";
 
 export const createRoom = async (req, res) => {
   const roomName = req.body.roomName || "";
   try {
     const room = await createTwilioRoom(roomName);
-    const mainRoom = { _id: room.sid, _rev: "", breakouts: [] };
+    const mainRoom = { _id: room.sid, breakouts: [] };
 
     try {
-      await db.put(mainRoom);
+      const db = getDb();
+      await db.collection("video_rooms").insertOne(mainRoom);
+
       res.status(200).send({
         message: `New video room ${room.uniqueName} created`,
         room: mainRoom,
@@ -34,9 +39,23 @@ export const createBreakoutRoom = async (req, res) => {
   try {
     const breakoutRoom = await createTwilioRoom(roomName);
     try {
-      const mainRoom = await db.get(parentSid);
+      const db = getDb();
+      const mainRoom = await db
+        .collection("video_rooms")
+        .findOne({ _id: parentSid });
+
+      if (!mainRoom) {
+        return res.status(404).send({ message: `Parent room not found` });
+      }
+
       mainRoom.breakouts.push(breakoutRoom.sid);
-      await db.put(mainRoom);
+
+      await db
+        .collection("video_rooms")
+        .updateOne(
+          { _id: parentSid },
+          { $set: { breakouts: mainRoom.breakouts } }
+        );
 
       res.status(200).send({
         message: `Breakout room ${breakoutRoom.uniqueName} created`,
@@ -57,14 +76,15 @@ export const listActiveRooms = async (req, res) => {
     const activeRoomSids = rooms.map((room) => room.sid);
 
     try {
-      const dbRooms = await db.allDocs({ include_docs: true });
-      const dbActiveRooms = dbRooms.rows.filter((row) =>
-        activeRoomSids.includes(row.id)
-      );
+      const db = getDb();
+      const dbRooms = await db
+        .collection("video_rooms")
+        .find({ _id: { $in: activeRoomSids } })
+        .toArray();
 
-      const videoRooms = dbActiveRooms.map((row) => {
-        const activeMainRoom = rooms.find((room) => room.sid === row.doc._id);
-        const breakoutSids = row.doc.breakouts;
+      const videoRooms = dbRooms.map((row) => {
+        const activeMainRoom = rooms.find((room) => room.sid === row._id);
+        const breakoutSids = row.breakouts;
         const activeBreakoutRooms = rooms.filter((room) =>
           breakoutSids.includes(room.sid)
         );
